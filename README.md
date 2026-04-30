@@ -1,36 +1,85 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Insighta Labs+ Web Portal
+
+A web portal for the Insighta Labs+ platform, providing profile management, analytics dashboards, and natural language search through a browser interface. Built with Next.js 14, TypeScript, and Tailwind CSS.
+
+## Features
+
+- GitHub OAuth authentication via HTTP-only cookies
+- Dashboard with profile metrics (total, male, female counts)
+- Filterable and paginated profiles list with CSV export
+- Profile detail views
+- Natural language search
+- Real-time data reflection from the same backend APIs used by the CLI
+- CSRF protection via SameSite cookie attribute
+
+## Tech Stack
+
+- [Next.js 14](https://nextjs.org) (App Router)
+- [TypeScript](https://www.typescriptlang.org)
+- [Tailwind CSS](https://tailwindcss.com)
+
+## Pages
+
+| Route | Description |
+| --- | --- |
+| `/` | Landing page with GitHub OAuth login button |
+| `/login` | Login page |
+| `/dashboard` | Dashboard displaying profile metrics (total, male, female counts) |
+| `/profiles` | Profiles list with filters (gender, age group, country), pagination, and CSV export |
+| `/profiles/[id]` | Profile detail view |
+| `/search` | Natural language search page |
+| `/account` | User account info with logout |
+| `/auth/callback` | OAuth callback handler |
+
+## Authentication
+
+Authentication is handled via GitHub OAuth with secure token management:
+
+- Access and refresh tokens are stored in **HTTP-only cookies**, making them inaccessible to JavaScript (`document.cookie` cannot read them).
+- **CSRF protection** is enforced through the `SameSite` cookie attribute.
+- All API requests include the `X-API-Version: 1` header, matching the same backend APIs used by the CLI.
+- Data is reflected in real time from the backend.
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18 or later
+- A running instance of the [Insighta backend API](https://github.com/DavidIfebueme/come-test-api)
+
+### Install and Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Other Commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build    # Production build
+npm run start    # Start production server
+npm run lint     # Run linter
+```
 
-## Learn More
+## Configuration
 
-To learn more about Next.js, take a look at the following resources:
+### Environment Variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Backend API URL | `http://localhost:8080` |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Create a `.env.local` file in the project root to override defaults:
 
-## Deploy on Vercel
+```
+NEXT_PUBLIC_API_URL=http://localhost:8080
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Repositories
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Web (this repo):** [insighta-web](https://github.com/DavidIfebueme/insighta-web)
+- **Backend API:** [come-test-api](https://github.com/DavidIfebueme/come-test-api)
+- **CLI:** [insighta-cli](https://github.com/DavidIfebueme/insighta-cli)
