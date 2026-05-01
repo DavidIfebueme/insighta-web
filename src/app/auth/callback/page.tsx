@@ -2,14 +2,20 @@
 
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { storeAuth } from '@/lib/auth';
 
 function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    const code = searchParams.get('code');
-    if (code) {
+    const accessToken = searchParams.get('access_token');
+    const refreshToken = searchParams.get('refresh_token');
+    const username = searchParams.get('username') || '';
+    const role = searchParams.get('role') || 'analyst';
+
+    if (accessToken) {
+      storeAuth(accessToken, refreshToken || '', username, role);
       router.push('/dashboard');
     } else {
       router.push('/login');

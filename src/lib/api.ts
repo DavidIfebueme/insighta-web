@@ -1,14 +1,21 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
+import { getAccessToken } from '@/lib/auth';
+
 export async function apiFetch(path: string, options: RequestInit = {}) {
+  const token = getAccessToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-API-Version': '1',
+    ...(options.headers as Record<string, string> || {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Version': '1',
-      ...options.headers,
-    },
-    credentials: 'include',
+    headers,
   });
 
   const data = await res.json();
