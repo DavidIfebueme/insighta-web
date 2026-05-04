@@ -19,15 +19,19 @@ pub fn parse_natural_language(query: &str) -> Option<ParsedQuery> {
 
     let mut parsed = ParsedQuery::default();
     let mut matched_any = false;
+    let mut saw_male = false;
+    let mut saw_female = false;
 
     let mut i = 0;
     while i < tokens.len() {
         let token = tokens[i];
 
         if token == "male" || token == "males" {
+            saw_male = true;
             parsed.gender = Some("male".to_string());
             matched_any = true;
         } else if token == "female" || token == "females" {
+            saw_female = true;
             parsed.gender = Some("female".to_string());
             matched_any = true;
         } else if token == "young" {
@@ -99,6 +103,10 @@ pub fn parse_natural_language(query: &str) -> Option<ParsedQuery> {
         }
 
         i += 1;
+    }
+
+    if saw_male && saw_female {
+        parsed.gender = None;
     }
 
     if matched_any {

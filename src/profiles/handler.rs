@@ -104,8 +104,12 @@ async fn get_profile(
 
 async fn list_profiles(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ListProfilesQuery>,
+    query: Result<Query<ListProfilesQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, AppError> {
+    let Query(query) = query.map_err(|_| {
+        AppError::UnprocessableEntity("Invalid query parameters".to_string())
+    })?;
+
     let page = query.page.unwrap_or(1).max(1);
     let limit = query.limit.unwrap_or(10).clamp(1, 50);
 
@@ -139,8 +143,12 @@ async fn list_profiles(
 
 async fn search_profiles(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<SearchQuery>,
+    query: Result<Query<SearchQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, AppError> {
+    let Query(query) = query.map_err(|_| {
+        AppError::UnprocessableEntity("Invalid query parameters".to_string())
+    })?;
+
     let q = query
         .q
         .as_deref()
