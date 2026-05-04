@@ -24,8 +24,8 @@ pub async fn seed_profiles(db: &PgPool) -> Result<(), AppError> {
         let id = Uuid::now_v7();
         sqlx::query(
             r#"
-            INSERT INTO profiles (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_name, country_probability, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            INSERT INTO profiles (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
             ON CONFLICT (LOWER(name)) DO NOTHING
             "#,
         )
@@ -33,7 +33,6 @@ pub async fn seed_profiles(db: &PgPool) -> Result<(), AppError> {
         .bind(&profile.name)
         .bind(&profile.gender)
         .bind(profile.gender_probability)
-        .bind(0i32)
         .bind(profile.age)
         .bind(&profile.age_group)
         .bind(&profile.country_id)

@@ -52,7 +52,6 @@ pub async fn create_profile(
 
     let gender = genderize.gender.unwrap();
     let gender_probability = genderize.probability;
-    let sample_size = genderize.count as i32;
     let age = agify.age.unwrap() as i32;
     let age_group = classify_age_group(age).to_string();
 
@@ -75,8 +74,8 @@ pub async fn create_profile(
 
     let profile = sqlx::query_as::<_, Profile>(
         r#"
-        INSERT INTO profiles (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_name, country_probability, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        INSERT INTO profiles (id, name, gender, gender_probability, age, age_group, country_id, country_name, country_probability, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
         "#,
     )
@@ -84,7 +83,6 @@ pub async fn create_profile(
     .bind(&name_lower)
     .bind(&gender)
     .bind(gender_probability)
-    .bind(sample_size)
     .bind(age)
     .bind(&age_group)
     .bind(&country_id)
