@@ -106,6 +106,20 @@ pub struct SearchQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    pub format: Option<String>,
+    pub gender: Option<String>,
+    pub country_id: Option<String>,
+    pub age_group: Option<String>,
+    pub min_age: Option<i32>,
+    pub max_age: Option<i32>,
+    pub min_gender_probability: Option<f64>,
+    pub min_country_probability: Option<f64>,
+    pub sort_by: Option<String>,
+    pub order: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GenderizeResponse {
     #[allow(dead_code)]
     pub name: String,

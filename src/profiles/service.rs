@@ -272,6 +272,145 @@ async fn fetch_genderize(
     Ok(data)
 }
 
+pub async fn export_profiles_csv(
+    db: &PgPool,
+    gender: Option<String>,
+    country_id: Option<String>,
+    age_group: Option<String>,
+    min_age: Option<i32>,
+    max_age: Option<i32>,
+    min_gender_probability: Option<f64>,
+    min_country_probability: Option<f64>,
+    sort_by: Option<String>,
+    order: Option<String>,
+) -> Result<String, AppError> {
+    let sort_col = match sort_by.as_deref() {
+        Some("age") => "age",
+        Some("gender_probability") => "gender_probability",
+        Some("created_at") => "created_at",
+        None => "created_at",
+        _ => return Err(AppError::BadRequest("Invalid query parameters".to_string())),
+    };
+
+    let order_dir = match order.as_deref() {
+        Some("asc") => "ASC",
+        Some("desc") => "DESC",
+        None => "DESC",
+        _ => return Err(AppError::BadRequest("Invalid query parameters".to_string())),
+    };
+
+    let mut conditions = Vec::new();
+    let mut param_idx = 1u32;
+
+    let gender_val = gender.map(|g| g.to_lowercase());
+    let country_id_val = country_id.map(|c| c.to_uppercase());
+    let age_group_val = age_group.map(|a| a.to_lowercase());
+
+    if gender_val.is_some() {
+        conditions.push(format!("LOWER(gender) = ${}", param_idx));
+        param_idx += 1;
+    }
+    if country_id_val.is_some() {
+        conditions.push(format!("UPPER(country_id) = ${}", param_idx));
+        param_idx += 1;
+    }
+    if age_group_val.is_some() {
+        conditions.push(format!("LOWER(age_group) = ${}", param_idx));
+        param_idx += 1;
+    }
+    if min_age.is_some() {
+        conditions.push(format!("age >= ${}", param_idx));
+        param_idx += 1;
+    }
+    if max_age.is_some() {
+        conditions.push(format!("age <= ${}", param_idx));
+        param_idx += 1;
+    }
+    if min_gender_probability.is_some() {
+        conditions.push(format!("gender_probability >= ${}", param_idx));
+        param_idx += 1;
+    }
+    if min_country_probability.is_some() {
+        conditions.push(format!("country_probability >= ${}", param_idx));
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let data_sql = format!(
+        "SELECT * FROM profiles {} ORDER BY {} {}",
+        where_clause, sort_col, order_dir
+    );
+
+    let mut data_q = sqlx::query_as::<_, Profile>(&data_sql);
+
+    if let Some(ref g) = gender_val {
+        data_q = data_q.bind(g);
+    }
+    if let Some(ref c) = country_id_val {
+        data_q = data_q.bind(c);
+    }
+    if let Some(ref a) = age_group_val {
+        data_q = data_q.bind(a);
+    }
+    if let Some(ma) = min_age {
+        data_q = data_q.bind(ma);
+    }
+    if let Some(ma) = max_age {
+        data_q = data_q.bind(ma);
+    }
+    if let Some(mp) = min_gender_probability {
+        data_q = data_q.bind(mp);
+    }
+    if let Some(mp) = min_country_probability {
+        data_q = data_q.bind(mp);
+    }
+
+    let profiles = data_q.fetch_all(db).await.map_err(|e| AppError::Internal(e.into()))?;
+
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    for p in &profiles {
+        wtr.serialize(ProfileCsvRow::from(p)).map_err(|e| AppError::Internal(e.into()))?;
+    }
+
+    let bytes = wtr.into_inner().map_err(|e| AppError::Internal(e.into()))?;
+    String::from_utf8(bytes).map_err(|e| AppError::Internal(e.into()))
+}
+
+#[derive(serde::Serialize)]
+struct ProfileCsvRow {
+    id: String,
+    name: String,
+    gender: String,
+    gender_probability: f64,
+    age: i32,
+    age_group: String,
+    country_id: String,
+    country_name: String,
+    country_probability: f64,
+    created_at: String,
+}
+
+impl From<&Profile> for ProfileCsvRow {
+    fn from(p: &Profile) -> Self {
+        Self {
+            id: p.id.to_string(),
+            name: p.name.clone(),
+            gender: p.gender.clone(),
+            gender_probability: p.gender_probability,
+            age: p.age,
+            age_group: p.age_group.clone(),
+            country_id: p.country_id.clone(),
+            country_name: p.country_name.clone(),
+            country_probability: p.country_probability,
+            created_at: p.created_at.to_rfc3339(),
+        }
+    }
+}
+
 async fn fetch_agify(
     client: &reqwest::Client,
     name: &str,

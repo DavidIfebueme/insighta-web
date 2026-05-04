@@ -1,102 +1,146 @@
-# Insighta Web — Backend API
+# insighta-web
 
-A demographic intelligence API built with Rust, Axum, SQLx, and PostgreSQL.
+backend api for insighta labs+ — a profile intelligence platform that collects data from genderize, agify, and nationalize apis, stores it, and serves it through a secure, multi-interface system.
 
-## Setup
+## system architecture
 
-1. Copy `.env.example` to `.env` and configure your database URL
-2. Run migrations: `cargo sqlx migrate run`
-3. Start the server: `cargo run`
-
-The database auto-seeds with 2026 profiles on first startup.
-
-## API Endpoints
-
-### POST /api/profiles
-
-Create a profile by name. Calls Genderize, Agify, and Nationalize APIs.
-
-```json
-{ "name": "ella" }
+```
+[github oauth] → [backend (axum)] → [postgresql]
+                      ↑
+            ┌─────────┼─────────┐
+            ↓         ↓         ↓
+        [cli]    [web portal]  [api clients]
 ```
 
-Returns 201 Created, or 200 with `"Profile already exists"` if the name already exists.
+the backend is built with axum, sqlx, and postgresql. it handles auth, role-based access control, rate limiting, and serves profile data through a rest api. the cli and web portal both talk to the same backend — single source of truth.
 
-### GET /api/profiles
+**stack:** rust, axum, sqlx, postgresql, jsonwebtoken, reqwest
 
-List profiles with filtering, sorting, and pagination.
+## auth flow
 
-**Filters:** `gender`, `country_id`, `age_group`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`
+github oauth with pkce. two flows depending on the interface:
 
-**Sorting:** `sort_by` (age | created_at | gender_probability), `order` (asc | desc)
+### cli flow
+1. `insighta login` calls `GET /auth/github` → gets auth url + state + code_verifier
+2. cli opens the url in browser, user authenticates on github
+3. user pastes the auth code back into the cli
+4. cli calls `GET /auth/github/callback?code=X&state=Y&code_verifier=Z`
+5. backend exchanges code with github, upserts user, issues tokens
+6. cli stores tokens at `~/.insighta/credentials.json`
 
-**Pagination:** `page` (default 1), `limit` (default 10, max 50)
+### web flow
+1. user clicks "continue with github" on the portal
+2. portal calls `GET /auth/github?redirect_url=PORTAL_URL` → gets auth url
+3. browser redirects to github, user authenticates
+4. github redirects to backend callback
+5. backend looks up pkce state, exchanges code, sets http-only cookies, redirects to portal
+6. portal reads user info via `GET /auth/me` using cookies
 
-Example: `/api/profiles?gender=male&country_id=NG&min_age=25&sort_by=age&order=desc&page=1&limit=10`
+### token handling
+- access token: 3 minutes (jwt, contains sub + role + exp + iat)
+- refresh token: 5 minutes (stored in db as sha256 hash)
+- on refresh: old refresh token is deleted, new pair is issued
+- on logout: refresh token is deleted from db, cookies are cleared
+- cli auto-refreshes tokens when they expire, falls back to re-login if refresh fails
+- web portal uses http-only, secure, samesite=lax cookies — tokens never touch javascript
 
-### GET /api/profiles/search
+## role enforcement
 
-Natural language query endpoint with pagination (`page`, `limit`).
+two roles: `admin` and `analyst` (default for new users)
 
-Example: `/api/profiles/search?q=young+males+from+nigeria`
+| endpoint | admin | analyst |
+|----------|-------|---------|
+| `GET /api/profiles` | yes | yes |
+| `GET /api/profiles/:id` | yes | yes |
+| `GET /api/profiles/search` | yes | yes |
+| `GET /api/profiles/export` | yes | yes |
+| `POST /api/profiles` | yes | no (403) |
+| `DELETE /api/profiles/:id` | yes | no (403) |
 
-### GET /api/profiles/{id}
+all `/api/*` endpoints require:
+1. valid jwt in authorization header or http-only cookie
+2. `x-api-version: 1` header
+3. user must be active (is_active = true, otherwise 403)
 
-Get a single profile by UUID.
+role checks happen in the handler layer using the authuser extractor from the middleware. admin-only endpoints check `auth_user.role != "admin"` and return 403 forbidden.
 
-### DELETE /api/profiles/{id}
+## natural language parsing
 
-Delete a profile. Returns 204 No Content.
+the search endpoint (`GET /api/profiles/search?q=...`) parses natural language queries into structured filters. it looks for:
 
-## Natural Language Parsing Approach
+- **gender keywords:** "male", "female", "men", "women", "boys", "girls", etc.
+- **age group keywords:** "young" → teenager, "old"/"elderly"/"senior" → senior, "child"/"children"/"kids" → child, "adult" → adult
+- **age ranges:** "under 30" → max_age=30, "over 50" → min_age=50, "between 20 and 40" → min_age=20, max_age=40
+- **country names:** maps 65+ country names and aliases to iso codes (e.g., "nigeria" → "ng", "uk" → "gb", "united states" → "us")
 
-The search endpoint uses a **rule-based keyword extraction parser** — no AI or LLMs.
+examples:
+- "young males from nigeria" → gender=male, age_group=teenager, country_id=ng
+- "senior females from kenya" → gender=female, age_group=senior, country_id=ke
+- "adults over 40 from south africa" → age_group=adult, min_age=40, country_id=za
 
-### How it works
+## api reference
 
-1. The query string is lowercased and tokenized by whitespace
-2. Tokens are scanned left-to-right matching against known keyword patterns
-3. Each match produces one or more filter constraints
-4. All matched filters are combined with AND logic
-5. If no meaningful tokens are matched, returns `"Unable to interpret query"`
+### auth
+- `GET /auth/github` — get github oauth url (with optional `redirect_url` param for web flow)
+- `GET /auth/github/callback` — handle oauth callback
+- `POST /auth/refresh` — refresh token pair
+- `POST /auth/logout` — invalidate refresh token
+- `GET /auth/me` — get current user info
 
-### Supported keywords and mappings
+### profiles
+- `GET /api/profiles` — list profiles (paginated, filterable, sortable)
+- `GET /api/profiles/:id` — get single profile
+- `GET /api/profiles/search?q=...` — natural language search
+- `GET /api/profiles/export?format=csv` — export to csv
+- `POST /api/profiles` — create profile (admin only)
+- `DELETE /api/profiles/:id` — delete profile (admin only)
 
-| Keyword/Pattern | Maps to |
-|---|---|
-| `male`, `males` | `gender=male` |
-| `female`, `females` | `gender=female` |
-| `young` | `min_age=16`, `max_age=24` |
-| `adult`, `adults` | `age_group=adult` |
-| `teenager`, `teenagers` | `age_group=teenager` |
-| `child`, `children` | `age_group=child` |
-| `senior`, `seniors` | `age_group=senior` |
-| `above X`, `over X`, `older X` | `min_age=X` |
-| `below X`, `under X`, `younger X` | `max_age=X` |
-| `from <country>` | `country_id=<code>` |
-| Bare country name | `country_id=<code>` |
+### query params (list/export)
+`gender`, `country_id`, `age_group`, `min_age`, `max_age`, `min_gender_probability`, `min_country_probability`, `sort_by` (age|gender_probability|created_at), `order` (asc|desc), `page`, `limit`
 
-### Country name resolution
+### pagination response
+```json
+{
+  "status": "success",
+  "page": 1,
+  "limit": 10,
+  "total": 2026,
+  "total_pages": 203,
+  "links": {
+    "self": "/api/profiles?page=1&limit=10",
+    "next": "/api/profiles?page=2&limit=10",
+    "prev": null
+  },
+  "data": [...]
+}
+```
 
-The parser maintains a lookup map of country names (and common aliases) to ISO codes. It supports:
-- Full country names: "nigeria" → NG, "kenya" → KE
-- Multi-word names: "south africa" → ZA, "dr congo" → CD
-- Common aliases: "us"/"usa" → US, "uk"/"britain" → GB
-- Partial name matching via word fragments
+## rate limiting & logging
 
-When `from` is detected, the parser greedily consumes subsequent non-keyword tokens as a country name. Without `from`, it still attempts to match bare country names as a fallback.
+- auth endpoints (`/auth/*`): 10 requests/minute per ip
+- api endpoints: 60 requests/minute per user
+- returns 429 too many requests when exceeded
 
-### Pagination
+every request is logged with: method, endpoint, status code, response time (ms)
 
-Search results support `page` and `limit` query parameters, defaulting to page 1 and limit 10.
+## setup
 
-## Limitations
+```bash
+cp .env.example .env
+# fill in your values
+createdb insighta_web
+sqlx migrate run
+cargo run
+```
 
-- **No fuzzy matching**: Country names must closely match the stored lookup. "Niger" and "Nigeria" are different entries.
-- **No boolean logic**: Cannot express OR conditions (e.g., "males or females from Kenya"). All filters are AND-combined.
-- **No age ranges beyond "young"**: The only predefined age range is "young" (16-24). Arbitrary ranges like "ages 20 to 30" are not supported.
-- **No negation**: Cannot express "not from Nigeria" or "excluding seniors".
-- **"from" is greedy**: In "males from south africa over 30", "over" is consumed as part of the country name if not a keyword. Keywords are excluded from country name capture.
-- **Gender keywords override**: If both "male" and "female" appear, the last one wins.
-- **No stemming**: "teenage" won't match "teenager" — only exact keyword matches work.
-- **Stop words are limited**: Only "and", "people", "persons", "person", "the" are ignored. Other non-keyword tokens may interfere with parsing.
+## environment variables
+
+| variable | description |
+|----------|-------------|
+| `DATABASE_URL` | postgres connection string |
+| `DATABASE_MAX_CONNECTIONS` | pool size (default: 5) |
+| `SERVER_ADDR` | listen address (default: 0.0.0.0:3000) |
+| `GITHUB_CLIENT_ID` | github oauth app client id |
+| `GITHUB_CLIENT_SECRET` | github oauth app client secret |
+| `JWT_SECRET` | secret for signing jwts |
+| `BASE_URL` | public url of this server |
