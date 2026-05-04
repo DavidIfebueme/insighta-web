@@ -11,8 +11,6 @@ pub enum AppError {
     #[error("{0}")]
     UnprocessableEntity(String),
     #[error("{0}")]
-    Conflict(String),
-    #[error("{0}")]
     BadGateway(String),
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
@@ -32,7 +30,6 @@ impl IntoResponse for AppError {
             AppError::UnprocessableEntity(msg) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "error", msg.clone())
             }
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, "error", msg.clone()),
             AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "502", msg.clone()),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);

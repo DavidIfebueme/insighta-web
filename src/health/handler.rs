@@ -4,7 +4,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 use std::sync::Arc;
-use crate::AppState;
+
+use crate::shared::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/health", get(health_check))
