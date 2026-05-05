@@ -52,7 +52,7 @@ impl From<Profile> for ProfileDetailDto {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProfileListItemDto {
     pub id: Uuid,
     pub name: String,
@@ -165,4 +165,13 @@ pub struct SeedProfile {
 #[derive(Debug, Deserialize)]
 pub struct SeedData {
     pub profiles: Vec<SeedProfile>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct UploadSummary {
+    pub status: String,
+    pub total_rows: i64,
+    pub inserted: i64,
+    pub skipped: i64,
+    pub reasons: serde_json::Map<String, serde_json::Value>,
 }
