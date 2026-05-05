@@ -58,15 +58,11 @@ pub struct PkceData {
 }
 
 pub fn take_pkce(state: &str) -> Option<PkceData> {
-    PKCE_STORE
-        .lock()
-        .unwrap()
-        .remove(state)
-        .map(|e| PkceData {
-            code_verifier: e.code_verifier,
-            redirect_url: e.redirect_url,
-            is_cli_flow: e.is_cli_flow,
-        })
+    PKCE_STORE.lock().unwrap().remove(state).map(|e| PkceData {
+        code_verifier: e.code_verifier,
+        redirect_url: e.redirect_url,
+        is_cli_flow: e.is_cli_flow,
+    })
 }
 
 pub fn generate_pkce() -> (String, String) {

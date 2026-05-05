@@ -231,9 +231,9 @@ async fn exchange_code(
             .into_response()),
 
         service::AuthCodeEntry::PendingGhCode(gh_code) => {
-            let code_verifier = body.code_verifier.ok_or_else(|| {
-                AppError::BadRequest("code_verifier required".to_string())
-            })?;
+            let code_verifier = body
+                .code_verifier
+                .ok_or_else(|| AppError::BadRequest("code_verifier required".to_string()))?;
 
             let client = reqwest::Client::new();
             let gh_token = service::exchange_github_code(
