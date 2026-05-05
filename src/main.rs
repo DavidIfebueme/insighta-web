@@ -22,8 +22,11 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url =
         std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
-    let database_max_connections: u32 = std::env::var("DATABASE_MAX_CONNECTIONS")
+    let database_min_connections: u32 = std::env::var("DATABASE_MIN_CONNECTIONS")
         .unwrap_or_else(|_| "5".to_string())
+        .parse()?;
+    let database_max_connections: u32 = std::env::var("DATABASE_MAX_CONNECTIONS")
+        .unwrap_or_else(|_| "20".to_string())
         .parse()?;
     let server_addr = std::env::var("SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
     let github_client_id = std::env::var("GITHUB_CLIENT_ID")
@@ -36,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
 
     let db = sqlx::postgres::PgPoolOptions::new()
+        .min_connections(database_min_connections)
         .max_connections(database_max_connections)
         .connect(&database_url)
         .await?;
@@ -44,12 +48,21 @@ async fn main() -> anyhow::Result<()> {
 
     profiles::seed::seed_profiles(&db).await?;
 
+    let cache = moka::sync::Cache::builder()
+        .max_capacity(10_000)
+        .time_to_idle(std::time::Duration::from_secs(300))
+        .build();
+
+    let upload_semaphore = tokio::sync::Semaphore::new(2);
+
     let state = Arc::new(AppState {
         db,
         jwt_secret,
         github_client_id,
         github_client_secret,
         base_url,
+        cache,
+        upload_semaphore,
     });
 
     let rate_limit_state = RateLimitState::new();
@@ -74,6 +87,8 @@ async fn main() -> anyhow::Result<()> {
                     "http://localhost:3000".parse().unwrap(),
                     "http://localhost:3001".parse().unwrap(),
                     "https://insighta-portal-ten.vercel.app".parse().unwrap(),
+                    "https://musetub.xyz".parse().unwrap(),
+                    "https://api.musetub.xyz".parse().unwrap(),
                 ])
                 .allow_credentials(true)
                 .allow_methods([

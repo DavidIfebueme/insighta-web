@@ -1,7 +1,7 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use std::sync::Arc;
@@ -21,9 +21,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/profiles/search", get(search_profiles))
         .route("/api/profiles/export", get(export_profiles))
         .route(
+            "/api/profiles/upload",
+            post(upload_profiles),
+        )
+        .route(
             "/api/profiles/{id}",
             get(get_profile).delete(delete_profile),
         )
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
 }
 
 #[derive(Serialize)]
@@ -102,7 +107,8 @@ async fn create_profile(
     }
 
     let (dto, existing) =
-        service::create_profile(&state.db, CreateProfileRequest { name: Some(name) }).await?;
+        service::create_profile(&state.db, &state.cache, CreateProfileRequest { name: Some(name) })
+            .await?;
 
     if existing {
         Ok((
@@ -154,6 +160,7 @@ async fn list_profiles(
 
     let (total, data) = service::list_profiles(
         &state.db,
+        &state.cache,
         query.gender.clone(),
         query.country_id.clone(),
         query.age_group.clone(),
@@ -228,6 +235,7 @@ async fn search_profiles(
 
     let (total, data) = service::list_profiles(
         &state.db,
+        &state.cache,
         parsed.gender,
         parsed.country_id,
         parsed.age_group,
@@ -298,6 +306,48 @@ async fn export_profiles(
     ))
 }
 
+async fn upload_profiles(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, AppError> {
+    if auth_user.role != "admin" {
+        return Err(AppError::Forbidden("Admin access required".to_string()));
+    }
+
+    let permit = state
+        .upload_semaphore
+        .acquire()
+        .await
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("Upload semaphore closed")))?;
+
+    let mut csv_bytes: Vec<u8> = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::BadRequest("Failed to read multipart field".to_string()))?
+    {
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| AppError::BadRequest("Failed to read file data".to_string()))?;
+        csv_bytes.extend_from_slice(&bytes);
+    }
+
+    if csv_bytes.is_empty() {
+        return Err(AppError::BadRequest(
+            "No file uploaded".to_string(),
+        ));
+    }
+
+    let summary = service::upload_profiles(&state.db, &state.cache, &csv_bytes).await?;
+
+    drop(permit);
+
+    Ok((StatusCode::OK, Json(summary)))
+}
+
 async fn delete_profile(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
@@ -307,6 +357,6 @@ async fn delete_profile(
         return Err(AppError::Forbidden("Admin access required".to_string()));
     }
 
-    service::delete_profile(&state.db, id).await?;
+    service::delete_profile(&state.db, &state.cache, id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
