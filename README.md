@@ -6,15 +6,17 @@ backend api for insighta labs+ — a profile intelligence platform that collects
 
 ```
 [github oauth] → [backend (axum)] → [postgresql]
+                       ↕
+                  [moka cache]
                        ↑
              ┌─────────┼─────────┐
              ↓         ↓         ↓
          [cli]    [web portal]  [api clients]
 ```
 
-the backend is built with axum, sqlx, and postgresql. it handles auth, role-based access control, rate limiting, and serves profile data through a rest api. the cli and web portal both talk to the same backend — single source of truth.
+the backend is built with axum, sqlx, and postgresql. it handles auth, role-based access control, rate limiting, and serves profile data through a rest api. the cli and web portal both talk to the same backend — single source of truth. an in-process moka cache sits in front of postgresql for read-heavy query paths.
 
-**stack:** rust, axum, sqlx, postgresql, jsonwebtoken, reqwest
+**stack:** rust, axum, sqlx, postgresql, jsonwebtoken, reqwest, moka
 
 ## auth flow
 
@@ -70,6 +72,7 @@ two roles: `admin` and `analyst` (default for new users)
 | `GET /api/profiles/export` | yes | yes |
 | `POST /api/profiles` | yes | no (403) |
 | `DELETE /api/profiles/:id` | yes | no (403) |
+| `POST /api/profiles/upload` | yes | no (403) |
 
 all `/api/*` endpoints require:
 1. valid jwt in authorization header or http-only cookie
@@ -80,17 +83,20 @@ role checks happen in the handler layer using the authuser extractor from the mi
 
 ## natural language parsing
 
-the search endpoint (`GET /api/profiles/search?q=...`) parses natural language queries into structured filters. it looks for:
+the search endpoint (`GET /api/profiles/search?q=...`) parses natural language queries into structured filters using a deterministic, rule-based parser. no ai, no llms.
 
-- **gender keywords:** "male", "female", "men", "women", "boys", "girls", etc.
-- **age group keywords:** "young" → teenager, "old"/"elderly"/"senior" → senior, "child"/"children"/"kids" → child, "adult" → adult
-- **age ranges:** "under 30" → max_age=30, "over 50" → min_age=50, "between 20 and 40" → min_age=20, max_age=40
-- **country names:** maps 65+ country names and aliases to iso codes (e.g., "nigeria" → "ng", "uk" → "gb", "united states" → "us")
+- **gender keywords:** "male"/"males"/"men"/"man"/"boys"/"boy" → male, "female"/"females"/"women"/"woman"/"girls"/"girl" → female
+- **age group keywords:** "child"/"children"/"kids" → child, "teenager"/"teens" → teenager, "adult"/"adults" → adult, "senior"/"seniors"/"elderly" → senior, "young" → min_age=16, max_age=24
+- **age ranges:** "20-74", "20—45", "20–74" (handles em/en dashes) → min/max, "under 30" → max_age=30, "over 50" → min_age=50, "between 20 and 40" → min_age=20, max_age=40, "aged 30" → min_age=30, max_age=30, "aged 20-45" → min/max
+- **country names and demonyms:** maps 65+ country names, aliases, and demonyms to iso codes. "nigeria" → ng, "nigerian" → ng, "kenya" → ke, "kenyan" → ke, "uk" → gb, "british" → gb, "united states" → us, "american" → us, etc.
+- **prepositions:** "from nigeria", "in kenya", "living in rwanda" — all trigger country detection
+- **filler words ignored:** the, of, with, who, are, is, to, and, years, year, old, than, people, persons, person, their, show, find, get, list, all, me, a, an
 
 examples:
-- "young males from nigeria" → gender=male, age_group=teenager, country_id=ng
-- "senior females from kenya" → gender=female, age_group=senior, country_id=ke
-- "adults over 40 from south africa" → age_group=adult, min_age=40, country_id=za
+- "nigerian females between the ages of 20-74" → gender=female, country_id=ng, min_age=20, max_age=74
+- "women aged 20-45 living in nigeria" → gender=female, min_age=20, max_age=45, country_id=ng
+- "boys under 18 in kenya" → gender=male, max_age=18, country_id=ke
+- "elderly women from rwanda" → gender=female, age_group=senior, country_id=rw
 
 ## api reference
 
@@ -106,8 +112,9 @@ examples:
 - `GET /api/profiles` — list profiles (paginated, filterable, sortable)
 - `GET /api/profiles/:id` — get single profile
 - `GET /api/profiles/search?q=...` — natural language search
-- `GET /api/profiles/export?format=csv` — export to csv
+- `GET /api/profiles/export?format=csv` — export to csv (streaming, supports same filters as list)
 - `POST /api/profiles` — create profile (admin only)
+- `POST /api/profiles/upload` — upload csv file with profile data (admin only, up to 500k rows, 50mb limit)
 - `DELETE /api/profiles/:id` — delete profile (admin only)
 
 ### query params (list/export)
@@ -138,6 +145,53 @@ examples:
 
 every request is logged with: method, endpoint, status code, response time (ms)
 
+## caching & performance
+
+profile list and search queries are cached in an in-process moka cache:
+
+- **capacity:** 10,000 entries
+- **eviction:** time-to-idle (tti) of 5 minutes — entries expire if not accessed for 5 minutes
+- **cache hits:** return in ~1-2ms (hashmap lookup, no database query)
+- **cache keys:** deterministic canonical strings built from sorted filter params — "nigerian females 20-74" and "women aged 20-45 from nigeria" produce the same key when they resolve to the same filters
+- **invalidation:** `invalidate_all()` on any write (create, delete, upload) — full invalidation is simpler and more correct than selective invalidation for a read-heavy system
+
+what is not cached: single profile lookups (fast by primary key), csv exports (streamed, potentially large), auth endpoints.
+
+## csv upload
+
+`POST /api/profiles/upload` — admin-only, multipart form, csv file (up to 500k rows, 50mb max).
+
+how it works:
+- multipart chunks stream to a temp file — csv bytes are never held entirely in memory
+- csv reader processes the temp file row-by-row
+- valid rows accumulate into 5,000-row chunks
+- each chunk is bulk-inserted with `INSERT ... SELECT * FROM UNNEST(...)` — not one-by-one
+- `ON CONFLICT (LOWER(name)) DO NOTHING` handles duplicates at the database level
+- a semaphore with 2 permits allows concurrent uploads without exhausting the connection pool
+- partial failures: each chunk auto-commits. rows already inserted remain. no rollback.
+
+validation — rows are skipped (not failed) when:
+- required fields are missing (name, gender, country_id)
+- gender is not "male" or "female"
+- age is negative
+- name already exists in the database
+- row is malformed (wrong column count, broken encoding)
+
+response example:
+```json
+{
+  "status": "success",
+  "total_rows": 50000,
+  "inserted": 48231,
+  "skipped": 1769,
+  "reasons": {
+    "duplicate_name": 1203,
+    "invalid_age": 312,
+    "missing_fields": 254
+  }
+}
+```
+
 ## setup
 
 ```bash
@@ -153,7 +207,8 @@ cargo run
 | variable | description |
 |----------|-------------|
 | `DATABASE_URL` | postgres connection string |
-| `DATABASE_MAX_CONNECTIONS` | pool size (default: 5) |
+| `DATABASE_MAX_CONNECTIONS` | pool max size (default: 20) |
+| `DATABASE_MIN_CONNECTIONS` | pool min size (default: 5) |
 | `SERVER_ADDR` | listen address (default: 0.0.0.0:3000) |
 | `GITHUB_CLIENT_ID` | github oauth app client id |
 | `GITHUB_CLIENT_SECRET` | github oauth app client secret |
