@@ -444,9 +444,11 @@ pub async fn export_profiles_csv(
 pub async fn upload_profiles(
     db: &PgPool,
     cache: &Cache<String, CachedQueryResult>,
-    csv_data: &[u8],
+    csv_path: &std::path::Path,
 ) -> Result<UploadSummary, AppError> {
-    let mut rdr = csv::Reader::from_reader(csv_data);
+    let file = std::fs::File::open(csv_path)
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut rdr = csv::Reader::from_reader(file);
     let mut total_rows: i64 = 0;
     let mut skipped: i64 = 0;
     let mut duplicate_name: i64 = 0;

@@ -75,7 +75,7 @@ the key is built by iterating over filter params in a fixed order — gender, co
 
 ### how it works
 
-**parsing:** csv reader iterates over rows one at a time. no loading the entire parsed dataset into memory.
+**parsing:** the handler streams multipart chunks directly to a temp file on disk — the raw csv bytes never sit entirely in memory. csv reader then reads from the file one row at a time. no loading the entire file into memory at any point.
 
 **validation per row:**
 - empty/missing name → skip, count as `missing_fields`
@@ -96,6 +96,8 @@ this is not one-by-one insertion. it's 5000 rows per query using postgres's unne
 **concurrency:** a tokio semaphore with 2 permits limits concurrent uploads. prevents resource exhaustion while still allowing multiple uploads to proceed.
 
 **body size limit:** 50mb, covering the maximum expected csv size (~26mb for 500k rows).
+
+**temp file approach:** multipart chunks are streamed to a temp file via `field.chunk()` — never buffered entirely in memory. csv::Reader then reads from the file incrementally. the temp file is cleaned up after processing (even on error, the os cleans /tmp on reboot).
 
 ### upload response example
 

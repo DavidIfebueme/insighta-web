@@ -321,27 +321,46 @@ async fn upload_profiles(
         .await
         .map_err(|_| AppError::Internal(anyhow::anyhow!("Upload semaphore closed")))?;
 
-    let mut csv_bytes: Vec<u8> = Vec::new();
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("insighta_upload_{}.csv", Uuid::now_v7()));
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| AppError::BadRequest("Failed to read multipart field".to_string()))?
     {
-        let bytes = field
-            .bytes()
+        let mut temp_file = tokio::fs::File::create(&temp_path)
             .await
-            .map_err(|_| AppError::BadRequest("Failed to read file data".to_string()))?;
-        csv_bytes.extend_from_slice(&bytes);
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
+
+        while let Some(mut field) = multipart
+            .next_field()
+            .await
+            .map_err(|_| AppError::BadRequest("Failed to read multipart field".to_string()))?
+        {
+            while let Some(chunk) = field
+                .chunk()
+                .await
+                .map_err(|_| AppError::BadRequest("Failed to read file chunk".to_string()))?
+            {
+                tokio::io::AsyncWriteExt::write_all(&mut temp_file, &chunk)
+                    .await
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
+            }
+        }
+        tokio::io::AsyncWriteExt::flush(&mut temp_file)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to flush temp file: {}", e)))?;
     }
 
-    if csv_bytes.is_empty() {
-        return Err(AppError::BadRequest(
-            "No file uploaded".to_string(),
-        ));
+    let metadata = tokio::fs::metadata(&temp_path)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to stat temp file: {}", e)))?;
+
+    if metadata.len() == 0 {
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(AppError::BadRequest("No file uploaded".to_string()));
     }
 
-    let summary = service::upload_profiles(&state.db, &state.cache, &csv_bytes).await?;
+    let summary = service::upload_profiles(&state.db, &state.cache, &temp_path).await?;
+
+    let _ = tokio::fs::remove_file(&temp_path).await;
 
     drop(permit);
 
