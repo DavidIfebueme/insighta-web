@@ -20,10 +20,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/profiles", get(list_profiles).post(create_profile))
         .route("/api/profiles/search", get(search_profiles))
         .route("/api/profiles/export", get(export_profiles))
-        .route(
-            "/api/profiles/upload",
-            post(upload_profiles),
-        )
+        .route("/api/profiles/upload", post(upload_profiles))
         .route(
             "/api/profiles/{id}",
             get(get_profile).delete(delete_profile),
@@ -106,9 +103,12 @@ async fn create_profile(
         return Err(AppError::BadRequest("Name is required".to_string()));
     }
 
-    let (dto, existing) =
-        service::create_profile(&state.db, &state.cache, CreateProfileRequest { name: Some(name) })
-            .await?;
+    let (dto, existing) = service::create_profile(
+        &state.db,
+        &state.cache,
+        CreateProfileRequest { name: Some(name) },
+    )
+    .await?;
 
     if existing {
         Ok((
@@ -325,9 +325,9 @@ async fn upload_profiles(
     let temp_path = temp_dir.join(format!("insighta_upload_{}.csv", Uuid::now_v7()));
 
     {
-        let mut temp_file = tokio::fs::File::create(&temp_path)
-            .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to create temp file: {}", e)))?;
+        let mut temp_file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
+            AppError::Internal(anyhow::anyhow!("Failed to create temp file: {}", e))
+        })?;
 
         while let Some(mut field) = multipart
             .next_field()
@@ -341,7 +341,9 @@ async fn upload_profiles(
             {
                 tokio::io::AsyncWriteExt::write_all(&mut temp_file, &chunk)
                     .await
-                    .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to write temp file: {}", e)))?;
+                    .map_err(|e| {
+                        AppError::Internal(anyhow::anyhow!("Failed to write temp file: {}", e))
+                    })?;
             }
         }
         tokio::io::AsyncWriteExt::flush(&mut temp_file)

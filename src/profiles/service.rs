@@ -341,7 +341,8 @@ pub async fn list_profiles(
     let total = total?;
     let profiles = profiles?;
 
-    let data: Vec<ProfileListItemDto> = profiles.into_iter().map(ProfileListItemDto::from).collect();
+    let data: Vec<ProfileListItemDto> =
+        profiles.into_iter().map(ProfileListItemDto::from).collect();
 
     cache.insert(
         cache_key,
@@ -446,8 +447,7 @@ pub async fn upload_profiles(
     cache: &Cache<String, CachedQueryResult>,
     csv_path: &std::path::Path,
 ) -> Result<UploadSummary, AppError> {
-    let file = std::fs::File::open(csv_path)
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let file = std::fs::File::open(csv_path).map_err(|e| AppError::Internal(e.into()))?;
     let mut rdr = csv::Reader::from_reader(file);
     let mut total_rows: i64 = 0;
     let mut skipped: i64 = 0;
