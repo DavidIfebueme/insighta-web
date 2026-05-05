@@ -17,6 +17,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/auth/github", get(github_auth))
         .route("/auth/github/callback", get(github_callback))
+        .route("/auth/exchange-code", post(exchange_code))
         .route("/auth/refresh", post(refresh_token))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
@@ -35,19 +36,24 @@ struct CallbackQuery {
     redirect_url: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ExchangeCodeRequest {
+    code: String,
+}
+
 fn build_cookie_headers(access_token: &str, refresh_token: &str) -> Vec<(&'static str, String)> {
     vec![
         (
             header::SET_COOKIE.as_str(),
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=180",
+                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=180",
                 access_token
             ),
         ),
         (
             header::SET_COOKIE.as_str(),
             format!(
-                "refresh_token={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=300",
+                "refresh_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=300",
                 refresh_token
             ),
         ),
@@ -58,11 +64,11 @@ fn clear_cookie_headers() -> Vec<(&'static str, String)> {
     vec![
         (
             header::SET_COOKIE.as_str(),
-            "access_token=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0".to_string(),
+            "access_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string(),
         ),
         (
             header::SET_COOKIE.as_str(),
-            "refresh_token=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0".to_string(),
+            "refresh_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string(),
         ),
     ]
 }
@@ -89,17 +95,22 @@ async fn github_auth(
         &code_challenge,
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "success",
-            "data": {
-                "url": url,
-                "state": state_val,
-                "code_verifier": code_verifier,
-            }
-        })),
-    ))
+    if query.redirect_url.is_some() {
+        Ok(Redirect::to(&url).into_response())
+    } else {
+        Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "success",
+                "data": {
+                    "url": url,
+                    "state": state_val,
+                    "code_verifier": code_verifier,
+                }
+            })),
+        )
+            .into_response())
+    }
 }
 
 async fn github_callback(
@@ -147,17 +158,13 @@ async fn github_callback(
     let tokens = service::issue_token_pair(&state.db, &user, &state.jwt_secret).await?;
 
     if let Some(ref redir) = redirect_url {
+        let auth_code = service::generate_auth_code();
+        service::store_auth_code(auth_code.clone(), tokens);
+
         let separator = if redir.contains('?') { '&' } else { '?' };
-        let redirect_with_tokens = format!(
-            "{}{}access_token={}&refresh_token={}",
-            redir, separator, tokens.access_token, tokens.refresh_token
-        );
-        let cookies = build_cookie_headers(&tokens.access_token, &tokens.refresh_token);
-        let mut response = Redirect::to(&redirect_with_tokens).into_response();
-        for (name, value) in cookies {
-            response.headers_mut().append(name, value.parse().unwrap());
-        }
-        Ok(response)
+        let redirect_with_code = format!("{}{}code={}", redir, separator, auth_code);
+
+        Ok(Redirect::to(&redirect_with_code).into_response())
     } else {
         Ok((
             StatusCode::OK,
@@ -177,6 +184,24 @@ async fn github_callback(
         )
             .into_response())
     }
+}
+
+async fn exchange_code(
+    Json(body): Json<ExchangeCodeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let tokens = service::exchange_auth_code(&body.code)
+        .ok_or_else(|| AppError::BadRequest("Invalid or expired authorization code".to_string()))?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "success",
+            "data": {
+                "access_token": tokens.access_token,
+                "refresh_token": tokens.refresh_token,
+            }
+        })),
+    ))
 }
 
 async fn refresh_token(

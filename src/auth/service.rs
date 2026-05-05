@@ -21,6 +21,9 @@ use std::sync::Mutex;
 static PKCE_STORE: Lazy<Mutex<HashMap<String, PkceEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+static AUTH_CODE_STORE: Lazy<Mutex<HashMap<String, TokenPair>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
 struct PkceEntry {
     code_verifier: String,
     redirect_url: Option<String>,
@@ -62,6 +65,18 @@ pub fn generate_pkce() -> (String, String) {
 
 pub fn generate_state() -> String {
     Uuid::now_v7().to_string()
+}
+
+pub fn generate_auth_code() -> String {
+    Uuid::now_v7().to_string()
+}
+
+pub fn store_auth_code(code: String, tokens: TokenPair) {
+    AUTH_CODE_STORE.lock().unwrap().insert(code, tokens);
+}
+
+pub fn exchange_auth_code(code: &str) -> Option<TokenPair> {
+    AUTH_CODE_STORE.lock().unwrap().remove(code)
 }
 
 pub fn build_github_auth_url(
