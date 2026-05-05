@@ -39,7 +39,7 @@ impl IntoResponse for AppError {
                 (StatusCode::UNPROCESSABLE_ENTITY, "error", msg.clone())
             }
             AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, "error", msg.clone()),
-            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "502", msg.clone()),
+            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, "error", msg.clone()),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
                 (

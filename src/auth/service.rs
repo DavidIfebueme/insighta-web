@@ -21,30 +21,52 @@ use std::sync::Mutex;
 static PKCE_STORE: Lazy<Mutex<HashMap<String, PkceEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-static AUTH_CODE_STORE: Lazy<Mutex<HashMap<String, TokenPair>>> =
+static AUTH_CODE_STORE: Lazy<Mutex<HashMap<String, AuthCodeEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-struct PkceEntry {
-    code_verifier: String,
-    redirect_url: Option<String>,
+pub enum AuthCodeEntry {
+    Tokens(TokenPair),
+    PendingGhCode(String),
 }
 
-pub fn store_pkce(state: String, code_verifier: String, redirect_url: Option<String>) {
+struct PkceEntry {
+    code_verifier: Option<String>,
+    redirect_url: Option<String>,
+    is_cli_flow: bool,
+}
+
+pub fn store_pkce(
+    state: String,
+    code_verifier: Option<String>,
+    redirect_url: Option<String>,
+    is_cli_flow: bool,
+) {
     PKCE_STORE.lock().unwrap().insert(
         state,
         PkceEntry {
             code_verifier,
             redirect_url,
+            is_cli_flow,
         },
     );
 }
 
-pub fn take_pkce(state: &str) -> Option<(String, Option<String>)> {
+pub struct PkceData {
+    pub code_verifier: Option<String>,
+    pub redirect_url: Option<String>,
+    pub is_cli_flow: bool,
+}
+
+pub fn take_pkce(state: &str) -> Option<PkceData> {
     PKCE_STORE
         .lock()
         .unwrap()
         .remove(state)
-        .map(|e| (e.code_verifier, e.redirect_url))
+        .map(|e| PkceData {
+            code_verifier: e.code_verifier,
+            redirect_url: e.redirect_url,
+            is_cli_flow: e.is_cli_flow,
+        })
 }
 
 pub fn generate_pkce() -> (String, String) {
@@ -71,11 +93,11 @@ pub fn generate_auth_code() -> String {
     Uuid::now_v7().to_string()
 }
 
-pub fn store_auth_code(code: String, tokens: TokenPair) {
-    AUTH_CODE_STORE.lock().unwrap().insert(code, tokens);
+pub fn store_auth_code(code: String, entry: AuthCodeEntry) {
+    AUTH_CODE_STORE.lock().unwrap().insert(code, entry);
 }
 
-pub fn exchange_auth_code(code: &str) -> Option<TokenPair> {
+pub fn exchange_auth_code(code: &str) -> Option<AuthCodeEntry> {
     AUTH_CODE_STORE.lock().unwrap().remove(code)
 }
 

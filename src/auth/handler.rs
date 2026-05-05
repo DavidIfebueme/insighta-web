@@ -26,19 +26,21 @@ pub fn router() -> Router<Arc<AppState>> {
 #[derive(Debug, Deserialize)]
 struct AuthQuery {
     redirect_url: Option<String>,
+    state: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CallbackQuery {
     code: String,
     state: String,
-    code_verifier: Option<String>,
-    redirect_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExchangeCodeRequest {
     code: String,
+    code_verifier: Option<String>,
 }
 
 fn build_cookie_headers(access_token: &str, refresh_token: &str) -> Vec<(&'static str, String)> {
@@ -77,16 +79,23 @@ async fn github_auth(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (code_verifier, code_challenge) = service::generate_pkce();
-    let state_val = service::generate_state();
-
-    service::store_pkce(
-        state_val.clone(),
-        code_verifier.clone(),
-        query.redirect_url.clone(),
-    );
-
     let redirect_uri = format!("{}/auth/github/callback", state.base_url);
+
+    let (state_val, code_challenge) =
+        if let (Some(s), Some(cc)) = (query.state, query.code_challenge) {
+            service::store_pkce(s.clone(), None, query.redirect_url.clone(), true);
+            (s, cc)
+        } else {
+            let (verifier, challenge) = service::generate_pkce();
+            let state_val = service::generate_state();
+            service::store_pkce(
+                state_val.clone(),
+                Some(verifier),
+                query.redirect_url.clone(),
+                false,
+            );
+            (state_val, challenge)
+        };
 
     let url = service::build_github_auth_url(
         &state.github_client_id,
@@ -105,7 +114,6 @@ async fn github_auth(
                 "data": {
                     "url": url,
                     "state": state_val,
-                    "code_verifier": code_verifier,
                 }
             })),
         )
@@ -117,91 +125,156 @@ async fn github_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<CallbackQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (code_verifier, stored_redirect) = if let Some(cv) = query.code_verifier {
-        (cv, None)
+    let pkce_data = service::take_pkce(&query.state)
+        .ok_or_else(|| AppError::BadRequest("Invalid or expired state".to_string()))?;
+
+    if pkce_data.is_cli_flow {
+        let exchange_code = service::generate_auth_code();
+        service::store_auth_code(
+            exchange_code.clone(),
+            service::AuthCodeEntry::PendingGhCode(query.code.clone()),
+        );
+
+        if let Some(ref redir) = pkce_data.redirect_url {
+            let separator = if redir.contains('?') { '&' } else { '?' };
+            let redirect_with_code = format!(
+                "{}{}code={}&state={}",
+                redir, separator, exchange_code, query.state
+            );
+            Ok(Redirect::to(&redirect_with_code).into_response())
+        } else {
+            Err(AppError::BadRequest(
+                "Missing redirect URL for CLI flow".to_string(),
+            ))
+        }
     } else {
-        service::take_pkce(&query.state).unwrap_or_default()
-    };
+        let code_verifier = pkce_data
+            .code_verifier
+            .ok_or_else(|| AppError::BadRequest("Missing code verifier".to_string()))?;
 
-    let redirect_url = query.redirect_url.or(stored_redirect);
+        let client = reqwest::Client::new();
 
-    if code_verifier.is_empty() {
-        return Err(AppError::BadRequest("Missing code verifier".to_string()));
+        let gh_token = service::exchange_github_code(
+            &client,
+            &state.github_client_id,
+            &state.github_client_secret,
+            &query.code,
+            &code_verifier,
+        )
+        .await?;
+
+        let gh_user = service::fetch_github_user(&client, &gh_token.access_token).await?;
+
+        let user = service::upsert_user(
+            &state.db,
+            gh_user.id,
+            gh_user.login,
+            gh_user.email,
+            gh_user.avatar_url,
+        )
+        .await?;
+
+        if !user.is_active {
+            return Err(AppError::Forbidden("Account is disabled".to_string()));
+        }
+
+        let tokens = service::issue_token_pair(&state.db, &user, &state.jwt_secret).await?;
+
+        if let Some(ref redir) = pkce_data.redirect_url {
+            let auth_code = service::generate_auth_code();
+            service::store_auth_code(auth_code.clone(), service::AuthCodeEntry::Tokens(tokens));
+
+            let separator = if redir.contains('?') { '&' } else { '?' };
+            let redirect_with_code = format!("{}{}code={}", redir, separator, auth_code);
+
+            Ok(Redirect::to(&redirect_with_code).into_response())
+        } else {
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "success",
+                    "data": {
+                        "user": {
+                            "id": user.id,
+                            "username": user.username,
+                            "role": user.role,
+                            "avatar_url": user.avatar_url,
+                        },
+                        "access_token": tokens.access_token,
+                        "refresh_token": tokens.refresh_token,
+                    }
+                })),
+            )
+                .into_response())
+        }
     }
+}
 
-    let client = reqwest::Client::new();
+async fn exchange_code(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ExchangeCodeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let entry = service::exchange_auth_code(&body.code)
+        .ok_or_else(|| AppError::BadRequest("Invalid or expired authorization code".to_string()))?;
 
-    let gh_token = service::exchange_github_code(
-        &client,
-        &state.github_client_id,
-        &state.github_client_secret,
-        &query.code,
-        &code_verifier,
-    )
-    .await?;
-
-    let gh_user = service::fetch_github_user(&client, &gh_token.access_token).await?;
-
-    let user = service::upsert_user(
-        &state.db,
-        gh_user.id,
-        gh_user.login,
-        gh_user.email,
-        gh_user.avatar_url,
-    )
-    .await?;
-
-    if !user.is_active {
-        return Err(AppError::Forbidden("Account is disabled".to_string()));
-    }
-
-    let tokens = service::issue_token_pair(&state.db, &user, &state.jwt_secret).await?;
-
-    if let Some(ref redir) = redirect_url {
-        let auth_code = service::generate_auth_code();
-        service::store_auth_code(auth_code.clone(), tokens);
-
-        let separator = if redir.contains('?') { '&' } else { '?' };
-        let redirect_with_code = format!("{}{}code={}", redir, separator, auth_code);
-
-        Ok(Redirect::to(&redirect_with_code).into_response())
-    } else {
-        Ok((
+    match entry {
+        service::AuthCodeEntry::Tokens(tokens) => Ok((
             StatusCode::OK,
             Json(serde_json::json!({
                 "status": "success",
                 "data": {
-                    "user": {
-                        "id": user.id,
-                        "username": user.username,
-                        "role": user.role,
-                        "avatar_url": user.avatar_url,
-                    },
                     "access_token": tokens.access_token,
                     "refresh_token": tokens.refresh_token,
                 }
             })),
         )
-            .into_response())
-    }
-}
+            .into_response()),
 
-async fn exchange_code(
-    Json(body): Json<ExchangeCodeRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let tokens = service::exchange_auth_code(&body.code)
-        .ok_or_else(|| AppError::BadRequest("Invalid or expired authorization code".to_string()))?;
+        service::AuthCodeEntry::PendingGhCode(gh_code) => {
+            let code_verifier = body.code_verifier.ok_or_else(|| {
+                AppError::BadRequest("code_verifier required".to_string())
+            })?;
 
-    Ok((
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "success",
-            "data": {
-                "access_token": tokens.access_token,
-                "refresh_token": tokens.refresh_token,
+            let client = reqwest::Client::new();
+            let gh_token = service::exchange_github_code(
+                &client,
+                &state.github_client_id,
+                &state.github_client_secret,
+                &gh_code,
+                &code_verifier,
+            )
+            .await?;
+
+            let gh_user = service::fetch_github_user(&client, &gh_token.access_token).await?;
+
+            let user = service::upsert_user(
+                &state.db,
+                gh_user.id,
+                gh_user.login,
+                gh_user.email,
+                gh_user.avatar_url,
+            )
+            .await?;
+
+            if !user.is_active {
+                return Err(AppError::Forbidden("Account is disabled".to_string()));
             }
-        })),
-    ))
+
+            let tokens = service::issue_token_pair(&state.db, &user, &state.jwt_secret).await?;
+
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "success",
+                    "data": {
+                        "access_token": tokens.access_token,
+                        "refresh_token": tokens.refresh_token,
+                    }
+                })),
+            )
+                .into_response())
+        }
+    }
 }
 
 async fn refresh_token(
