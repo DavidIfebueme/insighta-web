@@ -40,14 +40,14 @@ fn build_cookie_headers(access_token: &str, refresh_token: &str) -> Vec<(&'stati
         (
             header::SET_COOKIE.as_str(),
             format!(
-                "access_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=180",
+                "access_token={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=180",
                 access_token
             ),
         ),
         (
             header::SET_COOKIE.as_str(),
             format!(
-                "refresh_token={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=300",
+                "refresh_token={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=300",
                 refresh_token
             ),
         ),
@@ -58,11 +58,11 @@ fn clear_cookie_headers() -> Vec<(&'static str, String)> {
     vec![
         (
             header::SET_COOKIE.as_str(),
-            "access_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string(),
+            "access_token=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0".to_string(),
         ),
         (
             header::SET_COOKIE.as_str(),
-            "refresh_token=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0".to_string(),
+            "refresh_token=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0".to_string(),
         ),
     ]
 }
