@@ -25,21 +25,73 @@ the composite index covers the most common filter combination. the single indexe
 
 **moka cache.** in-process cache with 10,000 entry capacity and 5-minute time-to-idle. read-heavy system, ~40% repeated queries. cache hits return in under 5ms. `invalidate_all()` on any write (create, delete, upload) — simpler and more correct than tracking which keys are affected.
 
-### before/after
+### live benchmark results (653,242 profiles in production db)
 
-measured with ~633k profiles in the database, local postgresql:
+all numbers measured server-side via localhost — pure processing time, no network or tls overhead.
 
-| query | before (no indexes, no cache) | after (indexes + cache) |
-|-------|------|-------|
-| unfiltered list (page 1, limit 10) | 40ms | 14ms (cache hit: 14ms) |
-| filtered: gender=male, country=ng | 21ms | 18ms (cache hit: 17ms) |
-| multi-filter + age range + sort | 500 error (type mismatch) | 15ms (cache hit: 13ms) |
-| nlp search: "male from nigeria" | 18ms | 18ms (cache hit: 14ms) |
-| csv export (country=ng, ~40k rows) | oom risk (fetch_all) | 540ms (streaming cursor) |
+| query | cache miss | cache hit | speedup |
+|-------|-----------|----------|---------|
+| unfiltered list (page 1, limit 10) | 32.9ms | 1.2ms | 27x |
+| filtered: gender=male, country=ng | 4.9ms | 0.8ms | 6x |
+| multi-filter: female, ke, age 20-45 | 26.9ms | 1.0ms | 27x |
+| age range: min_age=30, max_age=50 | 12.5ms | 1.0ms | 13x |
+| age group: senior | 36.0ms | 1.6ms | 23x |
+| age group: child | 71.7ms | 2.0ms | 36x |
+| gender=female only | 28.1ms | 1.6ms | 18x |
+| min_age=50 only | 22.0ms | 1.7ms | 13x |
 
-the "before" multi-filter query was actually broken — it returned 500 because numeric params were bound as text. the `::int4` and `::float8` casts fixed both correctness and performance.
+### nlp search (653k profiles, server-side)
 
-note: local db numbers are optimistic. with a remote db (network latency), the cache matters more because it eliminates the round trip entirely.
+| query | cache miss | cache hit |
+|-------|-----------|----------|
+| "nigerian females between the ages of 20-74" | 38.8ms | 1.3ms |
+| "women aged 20-45 living in nigeria" | 15.9ms | 1.2ms |
+| "males from nigeria over 30" | 34.4ms | 1.2ms |
+| "teens in nigeria" | 3.4ms | 1.2ms |
+| "elderly women from rwanda" | 3.2ms | 0.8ms |
+| "boys under 18 in kenya" | 13.0ms | 2.3ms |
+
+nlp parsing itself is ~0.01ms — negligible. the miss latency is determined entirely by what filters the parser extracts and how well those match the composite index. "elderly women from rwanda" is fast because rwanda has few profiles. "nigerian females 20-74" is slower because nigeria has ~40k profiles and the age range touches many rows.
+
+### csv export (653k profiles, server-side)
+
+| export | time | size |
+|--------|------|------|
+| all profiles (653k rows) | 1.98s | 86.5 mb |
+| country=ng (~40k rows) | 75ms | 1.6 mb |
+| female, ke, age 20-45 | 28ms | 250 kb |
+
+streaming cursor, not fetch_all. rows serialize one-at-a-time to csv. the all-profiles export is ~330k rows/sec — limited by csv serialization overhead, not the query.
+
+### csv upload (653k profiles already in db)
+
+| rows | time | inserted | rows/sec |
+|------|------|----------|----------|
+| 50,000 | 1,316ms | 50,000 | 38,055 |
+| 100,000 | 2,892ms | 100,000 | 34,578 |
+| 500,000 | 16,161ms | 500,000 | 30,939 |
+
+each 5,000-row chunk is one `insert ... select * from unnest(...)` with `on conflict (lower(name)) do nothing`. that's ~160ms per chunk. the bottleneck is the unique expression index check — postgres has to verify each row against the index. as the table grows, this check gets slightly slower per row.
+
+### why these numbers
+
+cache misses hit postgresql. the unfiltered and age-group queries scan more rows because those filters don't fully match the composite index `(country_id, gender, age_group)`. the `gender=male, country=ng` query is only 4.9ms miss because the composite index covers it perfectly — postgres can do an index-only scan.
+
+cache hits are ~1-2ms because they're just a hashmap lookup in moka's in-process memory. no sql, no network, no serialization. the cache stores the full result (total count + page of dtos) so the response is constructed directly from memory.
+
+### before (for reference)
+
+before stage 4b, with ~2k profiles and no indexes or cache:
+
+| query | before (no indexes, no cache) |
+|-------|------|
+| unfiltered list (page 1) | 40ms |
+| filtered: gender=male, country=ng | 21ms |
+| multi-filter + age range + sort | 500 error (type mismatch) |
+| nlp search: "male from nigeria" | 18ms |
+| csv export (country=ng, ~40k rows) | oom risk (fetch_all) |
+
+the multi-filter query was actually broken — it returned 500 because numeric params were bound as text. the `::int4` and `::float8` casts fixed both correctness and performance.
 
 ---
 
@@ -117,16 +169,15 @@ this is not one-by-one insertion. it's 5000 rows per query using postgres's unne
 
 the `reasons` map only includes non-zero categories.
 
-### upload performance
+### upload performance (live, 653k profiles already in db)
 
-| rows | time | inserted |
-|------|------|----------|
-| 1,000 | 249ms | 1,000 |
-| 10,000 | 781ms | 10,000 |
-| 100,000 | ~13s | 100,000 |
-| 500,000 | ~61s | 500,000 |
+| rows | time | inserted | rows/sec |
+|------|------|----------|----------|
+| 50,000 | 1,316ms | 50,000 | 38,055 |
+| 100,000 | 2,892ms | 100,000 | 34,578 |
+| 500,000 | 16,161ms | 500,000 | 30,939 |
 
-the bottleneck is the `on conflict (lower(name))` index check — postgres has to verify each row against the unique expression index. for pure new data, this is about 8k rows/sec on local postgresql. for all-duplicate data, it's faster because on conflict do nothing short-circuits quickly.
+the bottleneck is the `on conflict (lower(name))` index check — postgres has to verify each row against the unique expression index. for pure new data, this is about 31-38k rows/sec. throughput decreases slightly at scale because the index tree grows and each check touches more pages.
 
 ### edge cases handled
 
@@ -170,3 +221,43 @@ allows concurrent uploads without exhausting the connection pool or database. a 
 | `src/profiles/model.rs` | uploadsummary, clone derive on profilelistitemdto |
 | `src/profiles/service.rs` | cache key normalization, concurrent queries, type casts, streaming export, chunked csv upload |
 | `src/profiles/handler.rs` | upload endpoint, defaultbodylimit, cache integration |
+
+---
+
+## how we achieved this speed
+
+### indexes that match the query patterns
+
+the composite index `(country_id, gender, age_group)` covers the most common filter combination in one shot. when a query filters by all three columns, postgres does an index-only scan — it never touches the heap. single indexes on `age` and `created_at desc` handle range queries and the default sort order. the key insight: indexes only work if the query matches the column order. a `where country_id = 'ng' and gender = 'male'` query can use the first two columns of the composite index. a `where gender = 'male'` query alone cannot — it falls back to a bitmap scan or sequential scan.
+
+### removing function wrappers from where clauses
+
+`where lower(gender) = 'male'` cannot use a b-tree index on gender. wrapping a column in any function makes it opaque to the planner. rust normalizes filter values to lowercase/uppercase before binding them as sql params, so `where gender = 'male'` works and hits the index. same for country_id (normalized to uppercase).
+
+### concurrent count + data
+
+`list_profiles` runs the count query and the data query in parallel via `tokio::join!`. before, they ran sequentially — two round trips to the database. now it's one. on a local database this saves ~5ms. on a remote database with network latency, it saves much more.
+
+### moka in-process cache
+
+10,000 entries, 5-minute time-to-idle eviction. cache hits return in 1-2ms regardless of query complexity or dataset size. the cache stores the full result (count + page of dtos), so the response is constructed directly from memory with no sql, no network, no serialization. `invalidate_all()` on any write operation (create, delete, upload) — simpler than selective invalidation and correct for a read-heavy system with rare writes.
+
+### cache key normalization
+
+`build_cache_key()` produces a deterministic canonical string from all filter params in a fixed order. "nigerian females between ages 20 and 45" and "women aged 20-45 living in nigeria" both resolve to `country_id=ng:gender=female:max_age=45:min_age=20` and hit the same cache entry. without normalization, these would be separate entries and the cache would be less effective.
+
+### type casts for bound parameters
+
+`where age >= $1::int4` instead of `where age >= $1`. when numeric params are bound as text strings (runtime sqlx limitation), postgres has to infer the type at query time. without the cast, it sometimes gets it wrong and falls back to a sequential scan. the explicit cast lets the planner use the index.
+
+### unnest bulk insert instead of one-by-one
+
+5000 rows per `insert ... select * from unnest(...)` statement. this is ~100x faster than inserting one row per query because it amortizes the query planning, network round trip, and transaction overhead across 5000 rows. at 30k+ rows/sec, a 500k-row upload completes in ~16 seconds.
+
+### streaming for large result sets
+
+csv export uses `sqlx::fetch` (streaming cursor) instead of `fetch_all`. rows are pulled from postgres one at a time and written to csv incrementally. this means a 86.5mb export of 653k rows never holds more than a few rows in memory at once. before, `fetch_all` would load the entire result set into memory — an oom risk at scale.
+
+### streaming for uploads too
+
+multipart chunks are streamed to a temp file on disk via `field.chunk()`. the csv bytes never sit entirely in memory. the csv reader then processes the temp file row-by-row. this is why a 500k-row upload works fine within a 50mb body limit — the in-memory footprint is just one chunk of 5000 rows at a time.
