@@ -147,8 +147,13 @@ async fn github_callback(
     let tokens = service::issue_token_pair(&state.db, &user, &state.jwt_secret).await?;
 
     if let Some(ref redir) = redirect_url {
+        let separator = if redir.contains('?') { '&' } else { '?' };
+        let redirect_with_tokens = format!(
+            "{}{}access_token={}&refresh_token={}",
+            redir, separator, tokens.access_token, tokens.refresh_token
+        );
         let cookies = build_cookie_headers(&tokens.access_token, &tokens.refresh_token);
-        let mut response = Redirect::to(redir).into_response();
+        let mut response = Redirect::to(&redirect_with_tokens).into_response();
         for (name, value) in cookies {
             response.headers_mut().append(name, value.parse().unwrap());
         }
