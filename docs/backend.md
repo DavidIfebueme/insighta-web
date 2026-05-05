@@ -182,12 +182,125 @@ Status: 400 Bad Request
 
 ### Natural Language Search
 
-The `GET /api/profiles/search?q=<query>` endpoint parses natural language queries into structured filters. The parser (`profiles/search.rs`) extracts:
-- Gender keywords (male, female, man, woman, boy, girl)
-- Age group keywords (child, teen, adult, senior, young, old, elderly)
-- Age ranges ("25-40", "under 30", "over 50")
-- Country names (mapped to country codes)
-- Combinator logic (AND/OR)
+The `GET /api/profiles/search?q=<query>` endpoint parses natural language queries into structured filters using a deterministic, rule-based parser (`profiles/search.rs`). No AI, no LLM — just token matching and a fixed set of rules.
+
+#### How it works
+
+1. The query is lowercased and normalized (em-dashes, en-dashes, slashes all become `-`)
+2. It's split into tokens by whitespace
+3. Tokens are walked left-to-right, each matched against known patterns
+4. The result is a `ParsedQuery` struct with optional fields: `gender`, `age_group`, `country_id`, `min_age`, `max_age`
+
+#### What it recognizes
+
+**Gender:**
+- male/males, men/man, boys/boy → `gender: "male"`
+- female/females, women/woman, girls/girl → `gender: "female"`
+- If both male and female appear (e.g. "men and women"), gender is cleared (no filter)
+
+**Age groups:**
+- child/children/kids/kid → `age_group: "child"`
+- teenager/teenagers/teens → `age_group: "teenager"`
+- adult/adults → `age_group: "adult"`
+- senior/seniors/elderly → `age_group: "senior"`
+- young → `min_age: 16, max_age: 24`
+
+**Age ranges:**
+- `20-74`, `20—45`, `20–74` → `min_age: 20, max_age: 74`
+- `between 25 and 50` → `min_age: 25, max_age: 50`
+- `over 30`, `above 30`, `older than 30` → `min_age: 30`
+- `under 18`, `below 18`, `younger than 18` → `max_age: 18`
+- `aged 30`, `age 30` → `min_age: 30, max_age: 30`
+- `aged 20-45`, `ages 20-45` → `min_age: 20, max_age: 45`
+
+**Countries:**
+- Country names: `Nigeria`, `South Africa`, `DR Congo`, `Ivory Coast`
+- Demonyms (adjective forms): `Nigerian`, `Kenyan`, `Ghanaian`, `Egyptian`, `Congolese`, `American`, `British`, etc.
+- Triggered by prepositions: `from Nigeria`, `in Kenya`, `living in Rwanda`
+- Or bare: `nigerian females` (demonym used as adjective)
+- Multi-word countries are greedily consumed until a keyword is hit
+
+**Filler words ignored:** the, of, with, who, are, is, to, and, years, year, old, than, people, persons, person, their, show, find, get, list, all, me, a, an
+
+#### Example queries
+
+| Query | Parsed as |
+|-------|-----------|
+| `nigerian females between the ages of 20-74` | gender=female, country=NG, min_age=20, max_age=74 |
+| `women aged 20-45 living in Nigeria` | gender=female, min_age=20, max_age=45, country=NG |
+| `males from Nigeria over 30` | gender=male, country=NG, min_age=30 |
+| `females between 25 and 50 in Kenya` | gender=female, min_age=25, max_age=50, country=KE |
+| `males aged 30 from Ghana` | gender=male, min_age=30, max_age=30, country=GH |
+| `young adults in South Africa` | min_age=16, max_age=24, age_group=adult, country=ZA |
+| `elderly women from Rwanda` | gender=female, age_group=senior, country=RW |
+| `teens in Nigeria` | age_group=teenager, country=NG |
+| `boys under 18 in Kenya` | gender=male, max_age=18, country=KE |
+
+If no tokens match any pattern, the parser returns `None` and the search falls back to a simple name substring match.
+
+---
+
+## Caching
+
+### Overview
+
+Profile list queries (`GET /api/profiles` and `GET /api/profiles/search`) are cached using an in-process moka cache. The cache stores the full result set (total count + page of data) for each unique query.
+
+### Configuration
+
+- **Capacity:** 10,000 entries
+- **Eviction:** time-to-idle (TTI) of 5 minutes — entries expire if not accessed for 5 minutes
+- **Implementation:** `moka::sync::Cache` in `AppState`
+
+### Cache keys
+
+`build_cache_key()` produces a deterministic canonical string from all filter parameters, in fixed order:
+
+```
+list:country_id=NG:gender=female:max_age=74:min_age=20:page=1:limit=10
+```
+
+The key is built by iterating over filter params alphabetically (gender, country_id, age_group, min_age, max_age, min_gender_probability, min_country_probability, sort_by, order) then appending page and limit. This means two queries that resolve to the same filters always produce the same key, regardless of how the user expressed them. "nigerian females between ages 20 and 74" and "women aged 20-74 living in nigeria" both produce `country_id=NG:gender=female:max_age=74:min_age=20`.
+
+### Cache hits
+
+A **cache hit** occurs when:
+- The exact same combination of filters + page + limit was previously queried
+- The cached entry hasn't expired (accessed within the last 5 minutes)
+- No write operation (create, delete, upload) has occurred since the entry was cached
+
+On a cache hit, the database is not queried at all. The result is returned directly from memory — typically under 5ms.
+
+### Cache misses
+
+A **cache miss** occurs when:
+- The query has never been made before (new filter combination or different page)
+- The cached entry expired (not accessed for 5 minutes)
+- A write operation invalidated the cache (see below)
+
+On a cache miss, the database is queried normally (count + data queries run concurrently via `tokio::join!`), the result is stored in the cache, and then returned. First request is slow (~15-50ms depending on query complexity and DB latency), subsequent identical requests are fast.
+
+### Cache invalidation
+
+Any write operation calls `cache.invalidate_all()`, which clears every entry:
+
+| Operation | Invalidates cache? |
+|-----------|-------------------|
+| `POST /api/profiles` (create) | Yes |
+| `DELETE /api/profiles/:id` | Yes |
+| `POST /api/profiles/upload` | Yes |
+| `GET /api/profiles` (list) | No (read) |
+| `GET /api/profiles/search` | No (read) |
+| `GET /api/profiles/:id` | No (read, not cached) |
+| `GET /api/profiles/export` | No (read, not cached) |
+
+Full invalidation is simpler and more correct than selective invalidation. In a read-heavy system with rare writes, the cost of rebuilding a few cache entries after a write is negligible compared to the risk of stale data from a missed selective invalidation.
+
+### What is NOT cached
+
+- Single profile lookups (`GET /api/profiles/:id`) — direct DB query, fast by primary key
+- CSV exports (`GET /api/profiles/export`) — streamed from DB, potentially large
+- Auth endpoints — stateless JWT verification
 
 ---
 
