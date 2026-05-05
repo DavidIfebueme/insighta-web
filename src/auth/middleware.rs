@@ -60,18 +60,13 @@ pub async fn require_admin(
     next: Next,
 ) -> Result<Response, AppError> {
     if auth_user.role != "admin" {
-        return Err(AppError::Forbidden(
-            "Admin access required".to_string(),
-        ));
+        return Err(AppError::Forbidden("Admin access required".to_string()));
     }
     req.extensions_mut().insert(auth_user);
     Ok(next.run(req).await)
 }
 
-pub async fn api_version_middleware(
-    req: Request,
-    next: Next,
-) -> Result<Response, AppError> {
+pub async fn api_version_middleware(req: Request, next: Next) -> Result<Response, AppError> {
     let path = req.uri().path().to_string();
     if path.starts_with("/api/") {
         let version = req

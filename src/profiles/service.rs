@@ -1,9 +1,9 @@
-use crate::shared::country::country_id_to_name;
-use crate::shared::error::AppError;
 use crate::profiles::model::{
     AgifyResponse, CreateProfileRequest, GenderizeResponse, NationalizeResponse, Profile,
     ProfileDetailDto, ProfileListItemDto,
 };
+use crate::shared::country::country_id_to_name;
+use crate::shared::error::AppError;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -30,13 +30,11 @@ pub async fn create_profile(
         return Err(AppError::BadRequest("Name is required".to_string()));
     }
 
-    let existing = sqlx::query_as::<_, Profile>(
-        "SELECT * FROM profiles WHERE LOWER(name) = $1",
-    )
-    .bind(&name_lower)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| AppError::Internal(e.into()))?;
+    let existing = sqlx::query_as::<_, Profile>("SELECT * FROM profiles WHERE LOWER(name) = $1")
+        .bind(&name_lower)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     if let Some(profile) = existing {
         return Ok((ProfileDetailDto::from(profile), true));
@@ -107,6 +105,7 @@ pub async fn get_profile(db: &PgPool, id: Uuid) -> Result<ProfileDetailDto, AppE
     Ok(ProfileDetailDto::from(profile))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn list_profiles(
     db: &PgPool,
     gender: Option<String>,
@@ -181,7 +180,11 @@ pub async fn list_profiles(
     let count_sql = format!("SELECT COUNT(*) as count FROM profiles {}", where_clause);
     let data_sql = format!(
         "SELECT * FROM profiles {} ORDER BY {} {} LIMIT ${} OFFSET ${}",
-        where_clause, sort_col, order_dir, param_idx, param_idx + 1
+        where_clause,
+        sort_col,
+        order_dir,
+        param_idx,
+        param_idx + 1
     );
 
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
@@ -216,12 +219,21 @@ pub async fn list_profiles(
         data_q = data_q.bind(mp);
     }
 
-    let total = count_q.fetch_one(db).await.map_err(|e| AppError::Internal(e.into()))?;
+    let total = count_q
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     data_q = data_q.bind(limit).bind((page - 1) * limit);
-    let profiles = data_q.fetch_all(db).await.map_err(|e| AppError::Internal(e.into()))?;
+    let profiles = data_q
+        .fetch_all(db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
-    Ok((total, profiles.into_iter().map(ProfileListItemDto::from).collect()))
+    Ok((
+        total,
+        profiles.into_iter().map(ProfileListItemDto::from).collect(),
+    ))
 }
 
 pub async fn delete_profile(db: &PgPool, id: Uuid) -> Result<(), AppError> {
@@ -272,6 +284,7 @@ async fn fetch_genderize(
     Ok(data)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn export_profiles_csv(
     db: &PgPool,
     gender: Option<String>,
@@ -369,11 +382,15 @@ pub async fn export_profiles_csv(
         data_q = data_q.bind(mp);
     }
 
-    let profiles = data_q.fetch_all(db).await.map_err(|e| AppError::Internal(e.into()))?;
+    let profiles = data_q
+        .fetch_all(db)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
 
     let mut wtr = csv::Writer::from_writer(Vec::new());
     for p in &profiles {
-        wtr.serialize(ProfileCsvRow::from(p)).map_err(|e| AppError::Internal(e.into()))?;
+        wtr.serialize(ProfileCsvRow::from(p))
+            .map_err(|e| AppError::Internal(e.into()))?;
     }
 
     let bytes = wtr.into_inner().map_err(|e| AppError::Internal(e.into()))?;
@@ -411,10 +428,7 @@ impl From<&Profile> for ProfileCsvRow {
     }
 }
 
-async fn fetch_agify(
-    client: &reqwest::Client,
-    name: &str,
-) -> Result<AgifyResponse, AppError> {
+async fn fetch_agify(client: &reqwest::Client, name: &str) -> Result<AgifyResponse, AppError> {
     let resp = client
         .get("https://api.agify.io")
         .query(&[("name", name)])

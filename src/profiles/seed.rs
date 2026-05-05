@@ -15,8 +15,7 @@ pub async fn seed_profiles(db: &PgPool) -> Result<(), AppError> {
     }
 
     let data = include_str!("../../seed_profiles.json");
-    let seed: SeedData =
-        serde_json::from_str(data).map_err(|e| AppError::Internal(e.into()))?;
+    let seed: SeedData = serde_json::from_str(data).map_err(|e| AppError::Internal(e.into()))?;
 
     tracing::info!("Seeding {} profiles...", seed.profiles.len());
 

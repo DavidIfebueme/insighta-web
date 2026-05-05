@@ -899,6 +899,7 @@ dependencies = [
  "chrono",
  "csv",
  "dotenvy",
+ "http",
  "jsonwebtoken",
  "once_cell",
  "rand 0.9.4",

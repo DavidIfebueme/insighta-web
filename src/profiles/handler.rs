@@ -17,13 +17,13 @@ use crate::shared::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route(
-            "/api/profiles",
-            get(list_profiles).post(create_profile),
-        )
+        .route("/api/profiles", get(list_profiles).post(create_profile))
         .route("/api/profiles/search", get(search_profiles))
         .route("/api/profiles/export", get(export_profiles))
-        .route("/api/profiles/{id}", get(get_profile).delete(delete_profile))
+        .route(
+            "/api/profiles/{id}",
+            get(get_profile).delete(delete_profile),
+        )
 }
 
 #[derive(Serialize)]
@@ -146,9 +146,8 @@ async fn list_profiles(
     _auth_user: AuthUser,
     query: Result<Query<ListProfilesQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, AppError> {
-    let Query(query) = query.map_err(|_| {
-        AppError::UnprocessableEntity("Invalid query parameters".to_string())
-    })?;
+    let Query(query) =
+        query.map_err(|_| AppError::UnprocessableEntity("Invalid query parameters".to_string()))?;
 
     let page = query.page.unwrap_or(1).max(1);
     let limit = query.limit.unwrap_or(10).clamp(1, 50);
@@ -170,15 +169,33 @@ async fn list_profiles(
     .await?;
 
     let mut qp = Vec::new();
-    if let Some(ref g) = query.gender { qp.push(("gender".to_string(), g.clone())); }
-    if let Some(ref c) = query.country_id { qp.push(("country_id".to_string(), c.clone())); }
-    if let Some(ref a) = query.age_group { qp.push(("age_group".to_string(), a.clone())); }
-    if let Some(ma) = query.min_age { qp.push(("min_age".to_string(), ma.to_string())); }
-    if let Some(ma) = query.max_age { qp.push(("max_age".to_string(), ma.to_string())); }
-    if let Some(mp) = query.min_gender_probability { qp.push(("min_gender_probability".to_string(), mp.to_string())); }
-    if let Some(mp) = query.min_country_probability { qp.push(("min_country_probability".to_string(), mp.to_string())); }
-    if let Some(ref s) = query.sort_by { qp.push(("sort_by".to_string(), s.clone())); }
-    if let Some(ref o) = query.order { qp.push(("order".to_string(), o.clone())); }
+    if let Some(ref g) = query.gender {
+        qp.push(("gender".to_string(), g.clone()));
+    }
+    if let Some(ref c) = query.country_id {
+        qp.push(("country_id".to_string(), c.clone()));
+    }
+    if let Some(ref a) = query.age_group {
+        qp.push(("age_group".to_string(), a.clone()));
+    }
+    if let Some(ma) = query.min_age {
+        qp.push(("min_age".to_string(), ma.to_string()));
+    }
+    if let Some(ma) = query.max_age {
+        qp.push(("max_age".to_string(), ma.to_string()));
+    }
+    if let Some(mp) = query.min_gender_probability {
+        qp.push(("min_gender_probability".to_string(), mp.to_string()));
+    }
+    if let Some(mp) = query.min_country_probability {
+        qp.push(("min_country_probability".to_string(), mp.to_string()));
+    }
+    if let Some(ref s) = query.sort_by {
+        qp.push(("sort_by".to_string(), s.clone()));
+    }
+    if let Some(ref o) = query.order {
+        qp.push(("order".to_string(), o.clone()));
+    }
 
     let resp = build_paginated_resp("/api/profiles", page, limit, total, data, qp);
     Ok((StatusCode::OK, Json(resp)))
@@ -189,9 +206,8 @@ async fn search_profiles(
     _auth_user: AuthUser,
     query: Result<Query<SearchQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, AppError> {
-    let Query(query) = query.map_err(|_| {
-        AppError::UnprocessableEntity("Invalid query parameters".to_string())
-    })?;
+    let Query(query) =
+        query.map_err(|_| AppError::UnprocessableEntity("Invalid query parameters".to_string()))?;
 
     let q = query
         .q
@@ -199,7 +215,9 @@ async fn search_profiles(
         .ok_or_else(|| AppError::BadRequest("Missing or empty parameter".to_string()))?;
 
     if q.trim().is_empty() {
-        return Err(AppError::BadRequest("Missing or empty parameter".to_string()));
+        return Err(AppError::BadRequest(
+            "Missing or empty parameter".to_string(),
+        ));
     }
 
     let parsed = search::parse_natural_language(q)
@@ -225,7 +243,9 @@ async fn search_profiles(
     .await?;
 
     let mut qp = Vec::new();
-    if let Some(ref qv) = query.q { qp.push(("q".to_string(), qv.clone())); }
+    if let Some(ref qv) = query.q {
+        qp.push(("q".to_string(), qv.clone()));
+    }
 
     let resp = build_paginated_resp("/api/profiles/search", page, limit, total, data, qp);
     Ok((StatusCode::OK, Json(resp)))
@@ -236,13 +256,16 @@ async fn export_profiles(
     _auth_user: AuthUser,
     query: Result<Query<ExportQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<impl IntoResponse, AppError> {
-    let Query(query) = query.map_err(|_| {
-        AppError::UnprocessableEntity("Invalid query parameters".to_string())
-    })?;
+    let Query(query) =
+        query.map_err(|_| AppError::UnprocessableEntity("Invalid query parameters".to_string()))?;
 
     match query.format.as_deref() {
         Some("csv") | None => {}
-        _ => return Err(AppError::BadRequest("Unsupported export format".to_string())),
+        _ => {
+            return Err(AppError::BadRequest(
+                "Unsupported export format".to_string(),
+            ));
+        }
     }
 
     let csv_data = service::export_profiles_csv(
@@ -266,7 +289,10 @@ async fn export_profiles(
         StatusCode::OK,
         [
             ("content-type", "text/csv".to_string()),
-            ("content-disposition", format!("attachment; filename=\"{}\"", filename)),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"{}\"", filename),
+            ),
         ],
         csv_data,
     ))

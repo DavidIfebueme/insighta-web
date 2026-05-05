@@ -50,13 +50,16 @@ pub fn parse_natural_language(query: &str) -> Option<ParsedQuery> {
         } else if token == "senior" || token == "seniors" {
             parsed.age_group = Some("senior".to_string());
             matched_any = true;
-        } else if (token == "above" || token == "over" || token == "older") && i + 1 < tokens.len() {
+        } else if (token == "above" || token == "over" || token == "older") && i + 1 < tokens.len()
+        {
             if let Some(age) = parse_age_token(tokens[i + 1]) {
                 parsed.min_age = Some(age);
                 matched_any = true;
                 i += 1;
             }
-        } else if (token == "below" || token == "under" || token == "younger") && i + 1 < tokens.len() {
+        } else if (token == "below" || token == "under" || token == "younger")
+            && i + 1 < tokens.len()
+        {
             if let Some(age) = parse_age_token(tokens[i + 1]) {
                 parsed.max_age = Some(age);
                 matched_any = true;
@@ -81,24 +84,28 @@ pub fn parse_natural_language(query: &str) -> Option<ParsedQuery> {
                     i = j - 1;
                 }
             }
-        } else if token != "and" && token != "people" && token != "persons" && token != "person" && token != "the" {
-            if parsed.country_id.is_none() {
-                let mut country_tokens = vec![token];
-                let mut j = i + 1;
-                while j < tokens.len() {
-                    let t = tokens[j];
-                    if is_keyword(t) {
-                        break;
-                    }
-                    country_tokens.push(t);
-                    j += 1;
+        } else if token != "and"
+            && token != "people"
+            && token != "persons"
+            && token != "person"
+            && token != "the"
+            && parsed.country_id.is_none()
+        {
+            let mut country_tokens = vec![token];
+            let mut j = i + 1;
+            while j < tokens.len() {
+                let t = tokens[j];
+                if is_keyword(t) {
+                    break;
                 }
-                let country_name = country_tokens.join(" ");
-                if let Some(id) = country_name_to_id(&country_name) {
-                    parsed.country_id = Some(id.to_string());
-                    matched_any = true;
-                    i = j - 1;
-                }
+                country_tokens.push(t);
+                j += 1;
+            }
+            let country_name = country_tokens.join(" ");
+            if let Some(id) = country_name_to_id(&country_name) {
+                parsed.country_id = Some(id.to_string());
+                matched_any = true;
+                i = j - 1;
             }
         }
 
@@ -109,28 +116,39 @@ pub fn parse_natural_language(query: &str) -> Option<ParsedQuery> {
         parsed.gender = None;
     }
 
-    if matched_any {
-        Some(parsed)
-    } else {
-        None
-    }
+    if matched_any { Some(parsed) } else { None }
 }
 
 fn parse_age_token(token: &str) -> Option<i32> {
-    token.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok()
+    token
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .ok()
 }
 
 fn is_keyword(t: &str) -> bool {
     matches!(
         t,
-        "male" | "males"
-            | "female" | "females"
-            | "young" | "adult" | "adults"
-            | "teenager" | "teenagers"
-            | "child" | "children"
-            | "senior" | "seniors"
-            | "above" | "over" | "older"
-            | "below" | "under" | "younger"
-            | "from" | "and"
+        "male"
+            | "males"
+            | "female"
+            | "females"
+            | "young"
+            | "adult"
+            | "adults"
+            | "teenager"
+            | "teenagers"
+            | "child"
+            | "children"
+            | "senior"
+            | "seniors"
+            | "above"
+            | "over"
+            | "older"
+            | "below"
+            | "under"
+            | "younger"
+            | "from"
+            | "and"
     )
 }

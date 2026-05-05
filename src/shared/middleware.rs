@@ -71,9 +71,7 @@ pub async fn rate_limit_middleware(
     attempts.retain(|t| *t > minute_ago);
 
     if attempts.len() >= limit {
-        return Err(AppError::TooManyRequests(
-            "Rate limit exceeded".to_string(),
-        ));
+        return Err(AppError::TooManyRequests("Rate limit exceeded".to_string()));
     }
 
     attempts.push(now);
@@ -82,10 +80,7 @@ pub async fn rate_limit_middleware(
     Ok(next.run(req).await)
 }
 
-pub async fn request_logging_middleware(
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn request_logging_middleware(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let start = Instant::now();

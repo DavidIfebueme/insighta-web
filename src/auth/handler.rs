@@ -1,5 +1,5 @@
 use axum::extract::{Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -74,7 +74,11 @@ async fn github_auth(
     let (code_verifier, code_challenge) = service::generate_pkce();
     let state_val = service::generate_state();
 
-    service::store_pkce(state_val.clone(), code_verifier.clone(), query.redirect_url.clone());
+    service::store_pkce(
+        state_val.clone(),
+        code_verifier.clone(),
+        query.redirect_url.clone(),
+    );
 
     let redirect_uri = format!("{}/auth/github/callback", state.base_url);
 
@@ -231,12 +235,11 @@ async fn logout(
             .unwrap_or_default()
     };
 
-    if !refresh.is_empty() {
-        if let Ok(token_row) = service::validate_refresh_token(&state.db, &refresh).await {
-            if token_row.user_id == auth_user.user_id {
-                let _ = service::revoke_refresh_token(&state.db, &token_row.token_hash).await;
-            }
-        }
+    if !refresh.is_empty()
+        && let Ok(token_row) = service::validate_refresh_token(&state.db, &refresh).await
+        && token_row.user_id == auth_user.user_id
+    {
+        let _ = service::revoke_refresh_token(&state.db, &token_row.token_hash).await;
     }
 
     let cookie_headers = clear_cookie_headers();

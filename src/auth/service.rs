@@ -1,7 +1,7 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -14,11 +14,12 @@ use crate::shared::error::AppError;
 const ACCESS_TOKEN_EXPIRY_SECS: i64 = 180;
 const REFRESH_TOKEN_EXPIRY_SECS: i64 = 300;
 
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
 
-static PKCE_STORE: Lazy<Mutex<HashMap<String, PkceEntry>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static PKCE_STORE: Lazy<Mutex<HashMap<String, PkceEntry>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 struct PkceEntry {
     code_verifier: String,
@@ -26,11 +27,21 @@ struct PkceEntry {
 }
 
 pub fn store_pkce(state: String, code_verifier: String, redirect_url: Option<String>) {
-    PKCE_STORE.lock().unwrap().insert(state, PkceEntry { code_verifier, redirect_url });
+    PKCE_STORE.lock().unwrap().insert(
+        state,
+        PkceEntry {
+            code_verifier,
+            redirect_url,
+        },
+    );
 }
 
 pub fn take_pkce(state: &str) -> Option<(String, Option<String>)> {
-    PKCE_STORE.lock().unwrap().remove(state).map(|e| (e.code_verifier, e.redirect_url))
+    PKCE_STORE
+        .lock()
+        .unwrap()
+        .remove(state)
+        .map(|e| (e.code_verifier, e.redirect_url))
 }
 
 pub fn generate_pkce() -> (String, String) {
@@ -179,11 +190,7 @@ pub fn generate_refresh_token(_user: &User) -> String {
     Uuid::now_v7().to_string()
 }
 
-pub async fn store_refresh_token(
-    db: &PgPool,
-    user_id: Uuid,
-    token: &str,
-) -> Result<(), AppError> {
+pub async fn store_refresh_token(db: &PgPool, user_id: Uuid, token: &str) -> Result<(), AppError> {
     let token_hash = hash_token(token);
     let expires_at = Utc::now() + chrono::Duration::seconds(REFRESH_TOKEN_EXPIRY_SECS);
 
@@ -210,18 +217,17 @@ pub fn validate_access_token(token: &str, jwt_secret: &str) -> Result<AuthUser, 
     .map_err(|_| AppError::Unauthorized("Invalid or expired token".to_string()))?;
 
     Ok(AuthUser {
-        user_id: data.claims.sub.parse().map_err(|_| {
-            AppError::Unauthorized("Invalid token subject".to_string())
-        })?,
+        user_id: data
+            .claims
+            .sub
+            .parse()
+            .map_err(|_| AppError::Unauthorized("Invalid token subject".to_string()))?,
         role: data.claims.role,
         is_active: true,
     })
 }
 
-pub async fn validate_refresh_token(
-    db: &PgPool,
-    token: &str,
-) -> Result<RefreshTokenRow, AppError> {
+pub async fn validate_refresh_token(db: &PgPool, token: &str) -> Result<RefreshTokenRow, AppError> {
     let token_hash = hash_token(token);
 
     let row = sqlx::query_as::<_, RefreshTokenRow>(
@@ -255,7 +261,11 @@ pub async fn get_user_by_id(db: &PgPool, id: Uuid) -> Result<User, AppError> {
         .ok_or_else(|| AppError::Unauthorized("User not found".to_string()))
 }
 
-pub async fn issue_token_pair(db: &PgPool, user: &User, jwt_secret: &str) -> Result<TokenPair, AppError> {
+pub async fn issue_token_pair(
+    db: &PgPool,
+    user: &User,
+    jwt_secret: &str,
+) -> Result<TokenPair, AppError> {
     let access_token = generate_access_token(user, jwt_secret)?;
     let refresh_token = generate_refresh_token(user);
     store_refresh_token(db, user.id, &refresh_token).await?;

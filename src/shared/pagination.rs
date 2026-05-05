@@ -8,7 +8,13 @@ pub struct PaginationLinks {
     pub prev: Option<String>,
 }
 
-pub fn build_links(base_path: &str, page: i64, limit: i64, total: i64, query_string: &str) -> PaginationLinks {
+pub fn build_links(
+    base_path: &str,
+    page: i64,
+    limit: i64,
+    total: i64,
+    query_string: &str,
+) -> PaginationLinks {
     let total_pages = ((total as f64) / (limit as f64)).ceil() as i64;
 
     let qs = if query_string.is_empty() {
@@ -19,12 +25,24 @@ pub fn build_links(base_path: &str, page: i64, limit: i64, total: i64, query_str
 
     let self_link = format!("{}?page={}&limit={}{}", base_path, page, limit, qs);
     let next = if page < total_pages {
-        Some(format!("{}?page={}&limit={}{}", base_path, page + 1, limit, qs))
+        Some(format!(
+            "{}?page={}&limit={}{}",
+            base_path,
+            page + 1,
+            limit,
+            qs
+        ))
     } else {
         None
     };
     let prev = if page > 1 {
-        Some(format!("{}?page={}&limit={}{}", base_path, page - 1, limit, qs))
+        Some(format!(
+            "{}?page={}&limit={}{}",
+            base_path,
+            page - 1,
+            limit,
+            qs
+        ))
     } else {
         None
     };
