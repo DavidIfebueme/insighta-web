@@ -87,6 +87,8 @@ async fn main() -> anyhow::Result<()> {
                     "http://localhost:3000".parse().unwrap(),
                     "http://localhost:3001".parse().unwrap(),
                     "https://insighta-portal-ten.vercel.app".parse().unwrap(),
+                    "https://musetub.xyz".parse().unwrap(),
+                    "https://api.musetub.xyz".parse().unwrap(),
                 ])
                 .allow_credentials(true)
                 .allow_methods([
